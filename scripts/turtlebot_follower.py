@@ -15,8 +15,8 @@ class turtlebot_follower:
         cv2.namedWindow("Thresh", 1)
         self.bridge = CvBridge()
         cv2.startWindowThread()
-        self.image_sub = rospy.Subscriber("/turtlebot_1/camera/rgb/image_raw",Image,self.callback)
-        self.motion_pub = rospy.Publisher("/turtlebot_1/cmd_vel", Twist)
+        self.image_sub = rospy.Subscriber("/turtlebot/camera/rgb/image_raw",Image,self.callback)
+        self.motion_pub = rospy.Publisher("/turtlebot/cmd_vel", Twist)
     
     def callback(self, data):
         cv_image = self.bridge.imgmsg_to_cv2(data, "bgr8")
@@ -26,8 +26,16 @@ class turtlebot_follower:
         green_min = numpy.array([50,150,50])
         green_max = numpy.array([255,255,255])
     
+        red_min = numpy.array([0,200,100])
+        red_max = numpy.array([5,255,255])
+        
+        yellow_min = numpy.array([20,200,100])
+        yellow_max = numpy.array([50,255,195])
+        
         # Threshold the HSV image to get only green colors
         mask_img = cv2.inRange(hsv_img, green_min, green_max)
+        mask_img = cv2.bitwise_or(cv2.inRange(hsv_img, red_min, red_max), mask_img)
+        mask_img = cv2.bitwise_or(cv2.inRange(hsv_img, yellow_min, yellow_max), mask_img)
         
         # Set proportion of image to 0
         h, w = mask_img.shape
@@ -50,7 +58,7 @@ class turtlebot_follower:
             base_cmd = Twist()
             base_cmd.linear.x = base_cmd.linear.y = base_cmd.angular.z = 0;  
             err = cx - w/2
-            base_cmd.linear.x = 0.2
+            base_cmd.linear.x = 0.5
             base_cmd.angular.z = -float(err) / 100
             print base_cmd
                 
