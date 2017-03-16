@@ -6,8 +6,7 @@ import numpy
 from sensor_msgs.msg import Image
 from sensor_msgs.msg import LaserScan
 from cv_bridge import CvBridge
-from geometry_msgs.msg import Twist 
-from random import randint
+from geometry_msgs.msg import Twist
 
 class assignment:
     
@@ -17,7 +16,7 @@ class assignment:
     blue_max = numpy.array([150,255,255])
     red_min = numpy.array([0,200,100])
     red_max = numpy.array([5,255,255])
-    yellow_min = numpy.array([20,200,100])
+    yellow_min = numpy.array([30,200,100])
     yellow_max = numpy.array([50,255,195])
     
     wheel_radius = 0.076
@@ -31,7 +30,9 @@ class assignment:
     foundBlue = False
     foundGreen = False
     
-    laser_data = []
+    laser_data = [0]
+    laser_max = 10.0
+    laser_min = 0.0
     
     def __init__(self):
         cv2.namedWindow("Image window", 1)
@@ -39,11 +40,13 @@ class assignment:
         self.bridge = CvBridge()
         cv2.startWindowThread()
         self.laser_sub = rospy.Subscriber("/turtlebot/scan/", LaserScan, self.update_laser_data)
-        self.image_sub = rospy.Subscriber("/turtlebot/camera/rgb/image_raw",Image,self.callback)
+        self.image_sub = rospy.Subscriber("/turtlebot/camera/rgb/image_raw", Image, self.callback)
         self.motion_pub = rospy.Publisher("/turtlebot/cmd_vel", Twist)
         
     def update_laser_data(self, data):
         self.laser_data = data.ranges
+        self.laser_max = data.range_max
+        self.laser_min = data.range_min
     
     def callback(self, data):
         cv_image = self.bridge.imgmsg_to_cv2(data, "bgr8")
@@ -56,8 +59,8 @@ class assignment:
         mask_img = self.threshold_image(hsv_img)
         
         #Remove top and bottom of the image
-        mask_img[0:self.h/4, 0:self.w] = 0
-        mask_img[self.h - (self.h/4):self.h, 0:self.w] = 0
+        #mask_img[0:self.h/4, 0:self.w] = 0
+        #mask_img[self.h - (self.h/4):self.h, 0:self.w] = 0
         
         self.naive_behaviour(hsv_img, mask_img)
         self.results(cv_image, mask_img)
@@ -80,9 +83,12 @@ class assignment:
         return mask_img
         
     def results(self, img, mask):
-        print self.foundRed, self.foundYellow, self.foundBlue, self.foundGreen, "\n"
         cv2.imshow("Image window", img)
-        cv2.imshow("Thresh", cv2.bitwise_and(img, img, mask=mask))
+        drawn_img = mask
+        cv2.putText(drawn_img,'Red:{} Yellow:{} Blue:{} Green:{}'.format(self.foundRed, self.foundYellow, 
+                    self.foundBlue, self.foundGreen), (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.85, 255)
+        cv2.imshow("Thresh", cv2.bitwise_and(img, img, mask=drawn_img))
+            
             
     def f_kinematics(self, w_l, w_r):
         c_l = self.wheel_radius * w_l
@@ -92,18 +98,25 @@ class assignment:
         return (v, a)   
     
     def check_object(self, image):
-        sub_mat = image[int(round(self.w/2))-100:int(round(self.w/2))+100,int(round(self.h/2))-100:int(round(self.h/2))+100]
-                
-        if(cv2.inRange(sub_mat, self.green_min, self.green_max).sum() > 1):
+        mid_x = int(round(self.w/2))
+        mid_y = int(round(self.w/2))
+        
+        sub_mat = image[mid_y-1:mid_y+1, mid_x-100:mid_x+100]
+        
+        #sub_mat = image[int(round(self.w/2))-100:int(round(self.w/2))+100,int(round(self.h/2))-100:int(round(self.h/2))+100]
+        
+        min_size = 100 
+        
+        if(cv2.inRange(sub_mat, self.green_min, self.green_max).sum() > min_size):
             self.foundGreen = True
             self.found_object()
-        elif(cv2.inRange(sub_mat, self.blue_min, self.blue_max).sum() > 1):
+        elif(cv2.inRange(sub_mat, self.blue_min, self.blue_max).sum() > min_size):
             self.foundBlue = True
             self.found_object()
-        elif(cv2.inRange(sub_mat, self.red_min, self.red_max).sum() > 1):
+        elif(cv2.inRange(sub_mat, self.red_min, self.red_max).sum() > min_size):
             self.foundRed = True
             self.found_object()
-        elif(cv2.inRange(sub_mat, self.yellow_min, self.yellow_max).sum() > 1):
+        elif(cv2.inRange(sub_mat, self.yellow_min, self.yellow_max).sum() > min_size):
             self.foundYellow = True
             self.found_object()
     
@@ -114,63 +127,59 @@ class assignment:
         rospy.sleep(2)
         
     def naive_behaviour(self, hsv_img, mask_img):
+        v = 0 #Set initial velocity and angular
+        a = 0
+        
+        v_speed = 0.6 #Set variaboles for v, a speeds
+        a_speed = 0.8
+        d_min = 1 #Set a variable for min distance to get to objects
         
         h, w, c = hsv_img.shape
-        base_cmd = Twist()
-        base_cmd.linear.x = base_cmd.linear.y = base_cmd.angular.z = 0
+        
+        cmd_vel = Twist()
+        cmd_vel.linear.x = cmd_vel.linear.y = cmd_vel.angular.z = 0
         
         ranges = numpy.array(self.laser_data, dtype=numpy.float)
+        ranges[numpy.isnan(ranges)] = self.laser_max
         
         midpoint = int(round(len(ranges) / 2))  
-        lr_len = len(ranges) / 2 #45* of data
+        lr_len = int(round(len(ranges) / 2)) #45* of data
         
-        left_to_mid = ranges[midpoint-lr_len:midpoint]
-        mid_to_right = ranges[midpoint:midpoint+lr_len]
+        left_to_mid = ranges[midpoint-lr_len + 1:midpoint]
+        mid_to_right = ranges[midpoint:midpoint+lr_len - 1]
         
-        left_range = numpy.nanmin(left_to_mid)
-        right_range = numpy.nanmin(mid_to_right)
-        center_range = ranges[midpoint]
+        left_range = min(left_to_mid) if len(left_to_mid) > 0 else 0   
+        center_range = ranges[midpoint] if ranges[midpoint] else 0
+        right_range = min(mid_to_right) if len(mid_to_right) > 0 else 0
         
-        
+        print left_range, center_range, right_range
+                    
         if(mask_img.sum() >= 1):
             M = cv2.moments(mask_img)
 
-            if M['m00'] > 0:
-              cx = int(M['m10']/M['m00'])
-              #cy = int(M['m01']/M['m00'])
-              
-            if(center_range > 0.8):
-                err = cx - w/2
-                base_cmd.linear.x = 1
-                base_cmd.angular.z = (-float(err) / 100)
-                    
-                self.motion_pub.publish(base_cmd)
-            else:
+            if(center_range < 0.9):
                 self.check_object(hsv_img)
-                    
-        else:
-            d = 1 # min_distace
-            x_s = 1 #x speed
-            z_s = 1 #angular speed
-            
-            direction_min = min([left_range, center_range, right_range])
-            if left_range > d and right_range > d and direction_min > 1:
-                base_cmd.linear.x = x_s
-            elif left_range - right_range < -d:
-                base_cmd.angular.z = z_s
-            elif left_range - right_range > +d:
-                base_cmd.angular.z = -z_s
-            else:
-                base_cmd.angular.z = z_s
+            elif M['m00'] > 0:
+                cx = int(M['m10']/M['m00'])
+                v = 1
+                a = (-float(cx - w/2) / 100)
                 
-            self.motion_pub.publish(base_cmd)
-            
-        self.motion_pub.publish(base_cmd)
+        elif left_range > d_min and right_range > d_min:
+            direction_min = min([left_range, center_range, right_range])
+            v = v_speed if direction_min > d_min else -v_speed
+        elif left_range - right_range < -d_min:
+            a = a_speed
+        elif left_range - right_range > +d_min:
+            a = -a_speed
+        else:
+            a = a_speed
         
-
+        cmd_vel.linear.x = v if v <= v_speed else v_speed
+        cmd_vel.angular.z = a if a <= v_speed else a_speed
+        
+        self.motion_pub.publish(cmd_vel)
+        
 rospy.init_node('assignment')
 tf = assignment()
-
 rospy.spin()
-
 cv2.destroyAllWindows()
