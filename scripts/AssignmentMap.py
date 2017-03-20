@@ -1,13 +1,14 @@
 #!/usr/bin/env python
 
+import sys
 import rospy
 import cv2 
 import numpy
 from sensor_msgs.msg import Image
 from sensor_msgs.msg import LaserScan
 from cv_bridge import CvBridge
-from geometry_msgs.msg import Twist
-import time
+from geometry_msgs.msg import Twist, PoseStamped, PoseWithCovarianceStamped
+from move_base_msgs.msg import MoveBaseActionFeedback
 
 class assignment_map:
     
@@ -35,57 +36,72 @@ class assignment_map:
     laser_max = 10.0
     laser_min = 0.0
     
+    hsv_img = []
+    mask_img = []
+    
+    amcl = []
+    feedback_data = []
+    
     def __init__(self):
         cv2.namedWindow("Image window", 1)
         cv2.namedWindow("Thresh", 1)
         self.bridge = CvBridge()
         cv2.startWindowThread()
+        self.motion_pub = rospy.Publisher("/turtlebot/cmd_vel", Twist, queue_size=10)
+        self.move_base_pub = rospy.Publisher("turtlebot/move_base_simple/goal", PoseStamped, queue_size=10)
+        self.move_base_feedback_pub = rospy.Subscriber("turtlebot/move_base/feedback", MoveBaseActionFeedback, self.update_feedback)        
         self.laser_sub = rospy.Subscriber("/turtlebot/scan/", LaserScan, self.update_laser_data)
-        self.image_sub = rospy.Subscriber("/turtlebot/camera/rgb/image_raw", Image, self.callback)
-        self.motion_pub = rospy.Publisher("/turtlebot/cmd_vel", Twist)
+        self.image_sub = rospy.Subscriber("/turtlebot/camera/rgb/image_raw", Image, self.image_raw)
+        self.position_sub = rospy.Subscriber("/turtlebot/amcl_pose", PoseWithCovarianceStamped, self.amcl_pose)        
         
     def update_laser_data(self, data):
         self.laser_data = data.ranges
         self.laser_max = data.range_max
         self.laser_min = data.range_min
     
-    def callback(self, data):
+    def update_feedback(self, data):
+        self.feedback_data = data
+        
+    def image_raw(self, data):
         cv_image = self.bridge.imgmsg_to_cv2(data, "bgr8")
-        hsv_img = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
+        self.hsv_img = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
 
         # define range of green color in HSV
-        self.h, self.w, c = hsv_img.shape
+        self.h, self.w, c = self.hsv_img.shape
         
         # Threshold the HSV image to get only pole colors
-        mask_img = self.threshold_image(hsv_img)
+        self.mask_img = self.threshold_image()
         
         #Remove top and bottom of the image
         #mask_img[0:self.h/4, 0:self.w] = 0
         #mask_img[self.h - (self.h/4):self.h, 0:self.w] = 0
         
-        self.naive_behaviour(hsv_img, mask_img)
-        self.results(cv_image, mask_img)
+        #self.naive_behaviour()        
+        self.display(cv_image)
     
-    def threshold_image(self, hsv_img):
-        mask_img = numpy.zeros((self.h, self.w, 1), dtype="uint8")
+    def amcl_pose(self, data):
+        self.amcl = data
+        
+    def threshold_image(self):
+        mask = numpy.zeros((self.h, self.w, 1), dtype="uint8")
         
         if(not self.foundGreen):
-            mask_img = cv2.inRange(hsv_img, self.green_min, self.green_max)
+            mask = cv2.inRange(self.hsv_img, self.green_min, self.green_max)
         
         if(not self.foundBlue):        
-            mask_img = cv2.bitwise_or(cv2.inRange(hsv_img, self.blue_min, self.blue_max), mask_img)
+            mask = cv2.bitwise_or(cv2.inRange(self.hsv_img, self.blue_min, self.blue_max), mask)
 
         if(not self.foundRed):           
-            mask_img = cv2.bitwise_or(cv2.inRange(hsv_img, self.red_min, self.red_max), mask_img)
+            mask = cv2.bitwise_or(cv2.inRange(self.hsv_img, self.red_min, self.red_max), mask)
             
         if(not self.foundYellow):   
-            mask_img = cv2.bitwise_or(cv2.inRange(hsv_img, self.yellow_min, self.yellow_max), mask_img)
+            mask = cv2.bitwise_or(cv2.inRange(self.hsv_img, self.yellow_min, self.yellow_max), mask)
         
-        return mask_img
+        return mask
         
-    def results(self, img, mask):
+    def display(self, img):
         cv2.imshow("Image window", img)
-        drawn_img = mask
+        drawn_img = self.mask_img
         cv2.putText(drawn_img,'Red:{} Yellow:{} Blue:{} Green:{}'.format(self.foundRed, self.foundYellow, 
                     self.foundBlue, self.foundGreen), (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.85, 255)
         cv2.imshow("Thresh", cv2.bitwise_and(img, img, mask=drawn_img))
@@ -123,22 +139,31 @@ class assignment_map:
             
         return False
     
+    def move_to(self, x, y, orientation):
+        ps = PoseStamped()
+        ps.header.frame_id = "/map"
+        ps.header.stamp = rospy.Time.now()
+        ps.pose.position.x = x
+        ps.pose.position.y = y
+        ps.pose.position.z = 0
+        ps.pose.orientation = orientation
+        self.move_base_pub.publish(ps)
+        
     def found_object(self):
         m = Twist()
         m.linear.x = m.linear.y = m.angular.z = 0
         self.motion_pub.publish(m)
+        print "Found object!"
         rospy.sleep(2)
         return True
 
-    def naive_behaviour(self, hsv_img, mask_img):
+    def naive_behaviour(self):
         v = 0 #Set initial velocity and angular
         a = 0
         
         v_speed = 1 #Set variaboles for v, a speeds
         a_speed = 0.8
         d_min = 1 #Set a variable for min distance to get to objects
-        
-        h, w, c = hsv_img.shape
         
         cmd_vel = Twist()
         cmd_vel.linear.x = cmd_vel.linear.y = cmd_vel.angular.z = 0
@@ -161,16 +186,16 @@ class assignment_map:
         
         print left_range, center_range, right_range
                     
-        if(mask_img.sum() >= 1):
-            M = cv2.moments(mask_img)
+        if(self.mask_img.sum() >= 1):
+            M = cv2.moments(self.mask_img)
 
             if(center_range < 0.9):
-                if(not self.check_object(hsv_img)):
+                if(not self.check_object(self.hsv_img)):
                     a = a_speed
             elif M['m00'] > 0:
                 cx = int(M['m10']/M['m00'])
                 v = v_speed
-                a = (-float(cx - w/2) / 100)
+                a = (-float(cx - self.w/2) / 100)
                 
         elif left_range > d_min and right_range > d_min:
             direction_min = min([left_range, center_range, right_range])
@@ -180,14 +205,24 @@ class assignment_map:
         elif left_range - right_range > +d_min:
             a = -a_speed
         else:
-            a = a_speed if(left_average > right_average + d_min) else -a_speed
+            a = a_speed
         
         cmd_vel.linear.x = v if v <= v_speed else v_speed
         cmd_vel.angular.z = a if a <= v_speed else a_speed
         
         self.motion_pub.publish(cmd_vel)
+
+def main():
+    rospy.init_node('assignment_one')
+    tb = assignment_map()
+    pos = [0, 0]
+
+    while(True):
+        print tb.feedback_data
+        rospy.sleep(1)
+    
+    rospy.spin()
         
-rospy.init_node('assignment')
-tf = assignment_map()
-rospy.spin()
-cv2.destroyAllWindows()
+if __name__ == '__main__':    
+    main()
+    cv2.destroyAllWindows()
