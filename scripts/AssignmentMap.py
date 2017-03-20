@@ -7,8 +7,9 @@ from sensor_msgs.msg import Image
 from sensor_msgs.msg import LaserScan
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Twist
+import time
 
-class assignment:
+class assignment_map:
     
     green_min = numpy.array([50,150,50])
     green_max = numpy.array([100,255,255])
@@ -109,28 +110,31 @@ class assignment:
         
         if(cv2.inRange(sub_mat, self.green_min, self.green_max).sum() > min_size):
             self.foundGreen = True
-            self.found_object()
+            return self.found_object()
         elif(cv2.inRange(sub_mat, self.blue_min, self.blue_max).sum() > min_size):
             self.foundBlue = True
-            self.found_object()
+            return self.found_object()
         elif(cv2.inRange(sub_mat, self.red_min, self.red_max).sum() > min_size):
             self.foundRed = True
-            self.found_object()
+            return self.found_object()
         elif(cv2.inRange(sub_mat, self.yellow_min, self.yellow_max).sum() > min_size):
             self.foundYellow = True
-            self.found_object()
+            return self.found_object()
+            
+        return False
     
     def found_object(self):
         m = Twist()
         m.linear.x = m.linear.y = m.angular.z = 0
         self.motion_pub.publish(m)
         rospy.sleep(2)
-        
+        return True
+
     def naive_behaviour(self, hsv_img, mask_img):
         v = 0 #Set initial velocity and angular
         a = 0
         
-        v_speed = 0.6 #Set variaboles for v, a speeds
+        v_speed = 1 #Set variaboles for v, a speeds
         a_speed = 0.8
         d_min = 1 #Set a variable for min distance to get to objects
         
@@ -161,7 +165,8 @@ class assignment:
             M = cv2.moments(mask_img)
 
             if(center_range < 0.9):
-                self.check_object(hsv_img)
+                if(not self.check_object(hsv_img)):
+                    a = a_speed
             elif M['m00'] > 0:
                 cx = int(M['m10']/M['m00'])
                 v = v_speed
@@ -175,7 +180,7 @@ class assignment:
         elif left_range - right_range > +d_min:
             a = -a_speed
         else:
-            a = a_speed
+            a = a_speed if(left_average > right_average + d_min) else -a_speed
         
         cmd_vel.linear.x = v if v <= v_speed else v_speed
         cmd_vel.angular.z = a if a <= v_speed else a_speed
@@ -183,6 +188,6 @@ class assignment:
         self.motion_pub.publish(cmd_vel)
         
 rospy.init_node('assignment')
-tf = assignment()
+tf = assignment_map()
 rospy.spin()
 cv2.destroyAllWindows()
