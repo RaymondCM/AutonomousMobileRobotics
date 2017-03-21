@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 
-import sys
 import rospy
 import cv2 
 import numpy
@@ -8,49 +7,32 @@ from sensor_msgs.msg import Image
 from sensor_msgs.msg import LaserScan
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Twist, PoseStamped, PoseWithCovarianceStamped
-from move_base_msgs.msg import MoveBaseActionFeedback
 from actionlib_msgs.msg import GoalID
 
 class assignment_map:
-    
-    green_min = numpy.array([50,150,50])
-    green_max = numpy.array([100,255,255])
-    blue_min = numpy.array([100,150,50])
-    blue_max = numpy.array([150,255,255])
-    red_min = numpy.array([0,200,100])
-    red_max = numpy.array([5,255,255])
-    yellow_min = numpy.array([30,200,100])
-    yellow_max = numpy.array([50,255,195])
-    
-    colour_thresholds = [{
-                        'colour': 'Red', 
+    colour_thresholds = {'Red': {
                         'min': numpy.array([0,200,100]),
                         'max': numpy.array([5,255,255]),
                         'found': False
-                        },{
-                        'colour': 'Green', 
+                        },
+                        'Green':{
                         'min': numpy.array([50,150,50]),
                         'max': numpy.array([100,255,255]),
                         'found': False
-                        },{
-                        'colour': 'Yellow', 
+                        },
+                        'Yellow':{
                         'min': numpy.array([30,200,100]),
                         'max': numpy.array([50,255,195]),
                         'found': False
-                        },{
-                        'colour': 'Blue', 
+                        },
+                        'Blue':{
                         'min': numpy.array([100,150,50]),
                         'max': numpy.array([150,255,255]),
                         'found': False
-                        }]
+                        }}
                              
     h = 0
     w = 0
-    
-    foundRed = False
-    foundYellow = False
-    foundBlue = False
-    foundGreen = False
     
     laser_data = [0]
     laser_max = 10.0
@@ -91,16 +73,8 @@ class assignment_map:
     def update_image_data(self, data):
         cv_image = self.bridge.imgmsg_to_cv2(data, "bgr8")
         self.hsv_img = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
-
-        # define range of green color in HSV
         self.h, self.w, c = self.hsv_img.shape
-        
-        # Threshold the HSV image to get only pole colors
         self.mask_img = self.threshold_image()
-        
-        #Remove top and bottom of the image
-        #mask_img[0:self.h/4, 0:self.w] = 0
-        #mask_img[self.h - (self.h/4):self.h, 0:self.w] = 0
         
         if self.searching:
             self.naive_behaviour()
@@ -110,44 +84,46 @@ class assignment_map:
     def threshold_image(self):
         mask = numpy.zeros((self.h, self.w, 1), dtype="uint8")
         
-        for x in range(0, len(self.colour_thresholds) - 1):
-            mask = cv2.bitwise_or(cv2.inRange(self.hsv_img, self.colour_thresholds[x]['min'], self.colour_thresholds[x]['min']), mask)
-
+        for c in self.colour_thresholds:
+            c_obj = self.colour_thresholds[c]
+            if not c_obj['found']:
+                mask = cv2.bitwise_or(cv2.inRange(self.hsv_img, c_obj['min'], c_obj['max']), mask)
+       
         return mask
         
     def display(self, img):
-        cv2.imshow("Image window", img)
         drawn_img = self.mask_img
-        cv2.putText(drawn_img,'Red:{} Yellow:{} Blue:{} Green:{}'.format(self.foundRed, self.foundYellow, 
-                    self.foundBlue, self.foundGreen), (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.85, 255)
+        
+        cv2.putText(drawn_img,'Red:{} Yellow:{} Blue:{} Green:{}'.format(
+            self.colour_thresholds['Red']['found'], 
+            self.colour_thresholds['Yellow']['found'],  
+            self.colour_thresholds['Blue']['found'],  
+            self.colour_thresholds['Green']['found']),
+            (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.85, 255)
+        
+        cv2.imshow("Image window", img)
         cv2.imshow("Thresh", cv2.bitwise_and(img, img, mask=drawn_img))
     
     def found_all(self):
-        return self.foundRed and self.foundGreen and self.foundBlue and self.foundYellow
+        for c in self.colour_thresholds:
+            if not self.colour_thresholds[c]['found']:
+                return False
+        
+        return True
         
     def check_object(self, image):
         mid_x = int(round(self.w/2))
         mid_y = int(round(self.w/2))
         
         sub_mat = image[mid_y-1:mid_y+1, mid_x-100:mid_x+100]
+        min_size = 100
         
-        #sub_mat = image[int(round(self.w/2))-100:int(round(self.w/2))+100,int(round(self.h/2))-100:int(round(self.h/2))+100]
-        
-        min_size = 100 
-        
-        if(cv2.inRange(sub_mat, self.green_min, self.green_max).sum() > min_size):
-            self.foundGreen = True
-            return self.found_object()
-        elif(cv2.inRange(sub_mat, self.blue_min, self.blue_max).sum() > min_size):
-            self.foundBlue = True
-            return self.found_object()
-        elif(cv2.inRange(sub_mat, self.red_min, self.red_max).sum() > min_size):
-            self.foundRed = True
-            return self.found_object()
-        elif(cv2.inRange(sub_mat, self.yellow_min, self.yellow_max).sum() > min_size):
-            self.foundYellow = True
-            return self.found_object()
-            
+        for c in self.colour_thresholds:
+            c_obj = self.colour_thresholds[c]
+            if(cv2.inRange(sub_mat, c_obj['min'], c_obj['max']).sum() > min_size):
+                self.colour_thresholds[c]['found'] = True
+                return self.found_object()
+                        
         return False
     
     def move_to(self, x, y, z):
@@ -204,11 +180,14 @@ class assignment_map:
         else:
             self.found_an_object = False
             return False
-        
-    def found_object(self):
+            
+    def cancel_motion(self):
         m = Twist()
         m.linear.x = m.linear.y = m.angular.z = 0
         self.motion_pub.publish(m)
+        
+    def found_object(self):
+        self.cancel_motion()
         print "Found object!"
         self.found_an_object = True
         self.searching = False
