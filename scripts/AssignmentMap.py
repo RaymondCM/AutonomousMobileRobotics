@@ -22,9 +22,28 @@ class assignment_map:
     yellow_min = numpy.array([30,200,100])
     yellow_max = numpy.array([50,255,195])
     
-    wheel_radius = 0.076
-    robot_radius = 0.43
-    
+    colour_thresholds = [{
+                        'colour': 'Red', 
+                        'min': numpy.array([0,200,100]),
+                        'max': numpy.array([5,255,255]),
+                        'found': False
+                        },{
+                        'colour': 'Green', 
+                        'min': numpy.array([50,150,50]),
+                        'max': numpy.array([100,255,255]),
+                        'found': False
+                        },{
+                        'colour': 'Yellow', 
+                        'min': numpy.array([30,200,100]),
+                        'max': numpy.array([50,255,195]),
+                        'found': False
+                        },{
+                        'colour': 'Blue', 
+                        'min': numpy.array([100,150,50]),
+                        'max': numpy.array([150,255,255]),
+                        'found': False
+                        }]
+                             
     h = 0
     w = 0
     
@@ -41,7 +60,6 @@ class assignment_map:
     mask_img = []
     
     amcl = []
-    feedback_data = []
     
     points = [[-2, -4, 0.004], [-0.9, 3.15, 0.007], [1.15, -0.5, -0.001], [-4, 1.53, 0.004]]
     current_point = 0
@@ -56,10 +74,10 @@ class assignment_map:
         self.motion_pub = rospy.Publisher("/turtlebot/cmd_vel", Twist, queue_size=10)
         self.move_base_pub = rospy.Publisher("turtlebot/move_base_simple/goal", PoseStamped, queue_size=10)
         self.cancel_move_base_pub = rospy.Publisher("/turtlebot/move_base/cancel", GoalID, queue_size=10)        
-        self.move_base_feedback_pub = rospy.Subscriber("turtlebot/move_base/feedback", MoveBaseActionFeedback, self.update_feedback)        
+        
         self.laser_sub = rospy.Subscriber("/turtlebot/scan/", LaserScan, self.update_laser_data)
-        self.image_sub = rospy.Subscriber("/turtlebot/camera/rgb/image_raw", Image, self.image_raw)
-        self.position_sub = rospy.Subscriber("/turtlebot/amcl_pose", PoseWithCovarianceStamped, self.amcl_pose)        
+        self.image_sub = rospy.Subscriber("/turtlebot/camera/rgb/image_raw", Image, self.update_image_data)
+        self.position_sub = rospy.Subscriber("/turtlebot/amcl_pose", PoseWithCovarianceStamped, self.update_amcl_data)        
         rospy.sleep(2)
         
     def update_laser_data(self, data):
@@ -67,10 +85,10 @@ class assignment_map:
         self.laser_max = data.range_max
         self.laser_min = data.range_min
     
-    def update_feedback(self, data):
-        self.feedback_data = data
-        
-    def image_raw(self, data):
+    def update_amcl_data(self, data):
+        self.amcl = data
+   
+    def update_image_data(self, data):
         cv_image = self.bridge.imgmsg_to_cv2(data, "bgr8")
         self.hsv_img = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
 
@@ -89,24 +107,12 @@ class assignment_map:
             
         self.display(cv_image)
     
-    def amcl_pose(self, data):
-        self.amcl = data
-        
     def threshold_image(self):
         mask = numpy.zeros((self.h, self.w, 1), dtype="uint8")
         
-        if(not self.foundGreen):
-            mask = cv2.inRange(self.hsv_img, self.green_min, self.green_max)
-        
-        if(not self.foundBlue):        
-            mask = cv2.bitwise_or(cv2.inRange(self.hsv_img, self.blue_min, self.blue_max), mask)
+        for x in range(0, len(self.colour_thresholds) - 1):
+            mask = cv2.bitwise_or(cv2.inRange(self.hsv_img, self.colour_thresholds[x]['min'], self.colour_thresholds[x]['min']), mask)
 
-        if(not self.foundRed):           
-            mask = cv2.bitwise_or(cv2.inRange(self.hsv_img, self.red_min, self.red_max), mask)
-            
-        if(not self.foundYellow):   
-            mask = cv2.bitwise_or(cv2.inRange(self.hsv_img, self.yellow_min, self.yellow_max), mask)
-        
         return mask
         
     def display(self, img):
@@ -115,14 +121,6 @@ class assignment_map:
         cv2.putText(drawn_img,'Red:{} Yellow:{} Blue:{} Green:{}'.format(self.foundRed, self.foundYellow, 
                     self.foundBlue, self.foundGreen), (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.85, 255)
         cv2.imshow("Thresh", cv2.bitwise_and(img, img, mask=drawn_img))
-            
-            
-    def f_kinematics(self, w_l, w_r):
-        c_l = self.wheel_radius * w_l
-        c_r = self.wheel_radius * w_r
-        v = (c_l + c_r) / 2
-        a = (c_l - c_r) / self.robot_radius
-        return (v, a)   
     
     def found_all(self):
         return self.foundRed and self.foundGreen and self.foundBlue and self.foundYellow
@@ -162,37 +160,27 @@ class assignment_map:
         ps.pose.orientation = self.amcl.pose.pose.orientation
         self.move_base_pub.publish(ps)
     
+    def get_goal_pos(self):
+        i = self.current_point
+        return self.points[i][0], self.points[i][1], self.points[i][2]
+    
+    def is_close_to_goal(self, min_distance):
+        g_x, g_y, g_z = self.get_goal_pos()
+        x_diff = abs(self.amcl.pose.pose.position.x - g_x)
+        y_diff = abs(self.amcl.pose.pose.position.y - g_y)
+        z_diff = abs(self.amcl.pose.pose.position.z - g_z)
+        return x_diff <= min_distance and y_diff <= min_distance and z_diff <= min_distance
+            
     def move_next(self):
         self.found_an_object = False
         if self.current_point == len(self.points):
             self.current_point = 0
-        
-        i = self.current_point
-        x = 0
-        y = 1
-        z = 2
-        
-        self.move_to(self.points[i][x], self.points[i][y], self.points[i][z])
+
+        self.move_to(*self.get_goal_pos())
         
     def is_at_position(self):
-        pos = self.amcl.pose.pose.position
-        i = self.current_point 
-        
-        x = 0
-        y = 1
-        z = 2
-
         try:
-            target_x = self.points[i][x]
-            target_y = self.points[i][y]
-            target_z = self.points[i][z]
-            
-            x_diff = abs(pos.x - target_x)
-            y_diff = abs(pos.y - target_y)
-            z_diff = abs(pos.z - target_z)
-            
-            threshold = 0.3
-            at_pos = x_diff <= threshold and y_diff <= threshold and z_diff <= threshold
+            at_pos = self.is_close_to_goal(0.3)
             
             if(at_pos):
                 print "I'm at the positon"
@@ -280,6 +268,7 @@ def main():
     
     sentGoal = False    
     while(not tb.found_all()):
+        
         if(sentGoal == False):
             print "Sending goal"
             tb.move_next()
