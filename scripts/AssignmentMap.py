@@ -90,84 +90,8 @@ class assignment_map:
         for c in self.colour_thresholds:
             c_obj = self.colour_thresholds[c]
             if not c_obj['found']:
-                mask = cv2.bitwise_or(cv2.inRange(self.hsv_img, c_obj['min'], c_obj['max']), mask)
-       #!/usr/bin/env python
+               mask = cv2.bitwise_or(cv2.inRange(self.hsv_img, c_obj['min'], c_obj['max']), mask)
 
-import rospy
-import cv2 
-import numpy
-import time
-from sensor_msgs.msg import Image
-from sensor_msgs.msg import LaserScan
-from cv_bridge import CvBridge
-from geometry_msgs.msg import Twist, PoseStamped, PoseWithCovarianceStamped
-from actionlib_msgs.msg import GoalID
-
-class assignment_map:
-    colour_thresholds = {'Red': {
-                        'min': numpy.array([0,200,100]),
-                        'max': numpy.array([5,255,255]),
-                        'found': False
-                        },
-                        'Green':{
-                        'min': numpy.array([50,150,50]),
-                        'max': numpy.array([100,255,255]),
-                        'found': False
-                        },
-                        'Yellow':{
-                        'min': numpy.array([30,200,100]),
-                        'max': numpy.array([50,255,195]),
-                        'found': False
-                        },
-                        'Blue':{
-                        'min': numpy.array([100,150,50]),
-                        'max': numpy.array([150,255,255]),
-                        'found': False
-                        }}
-                             
-    h = 0
-    w = 0
-    
-    laser_data = [0]
-    laser_max = 10.0
-    laser_min = 0.0
-    
-    hsv_img = []
-    mask_img = []
-    
-    amcl = []
-    
-    points = [[-2, -4, 0.004], [-0.9, 3.15, 0.007], [1.15, -0.5, -0.001], [-4, 1.53, 0.004]]
-    current_point = 0
-    searching = False
-    has_scanned = False
-    scan_time = time.time()
-    found_an_object = False
-    
-    def __init__(self):
-        cv2.namedWindow("Image window", 1)
-        cv2.namedWindow("Thresh", 1)
-        self.bridge = CvBridge()
-        cv2.startWindowThread()
-        self.motion_pub = rospy.Publisher("/turtlebot/cmd_vel", Twist, queue_size=10)
-        self.move_base_pub = rospy.Publisher("turtlebot/move_base_simple/goal", PoseStamped, queue_size=10)
-        self.cancel_move_base_pub = rospy.Publisher("/turtlebot/move_base/cancel", GoalID, queue_size=10)        
-        
-        self.laser_sub = rospy.Subscriber("/turtlebot/scan/", LaserScan, self.update_laser_data)
-        self.image_sub = rospy.Subscriber("/turtlebot/camera/rgb/image_raw", Image, self.update_image_data)
-        self.position_sub = rospy.Subscriber("/turtlebot/amcl_pose", PoseWithCovarianceStamped, self.update_amcl_data)        
-        rospy.sleep(2)
-        
-    def update_laser_data(self, data):
-        self.laser_data = data.ranges
-        self.laser_max = data.range_max
-        self.laser_min = data.range_min
-    
-    def update_amcl_data(self, data):
-        self.amcl = data
-   
-    def update_image_data(self, data):
-        cv_image = self.bridge.imgmsg_to_cv2(data, "bgr8")
         return mask
         
     def display(self, img):
@@ -276,16 +200,17 @@ class assignment_map:
         self.searching = False
         rospy.sleep(2)
         return True
-        
+
     def explore(self):
         print "Behaviour on"
-        self.has_scanned = abs(self.scan_time - time.time()) >= 15 #Change to a period of time rather than count
+        self.has_scanned = abs(self.scan_time - time.time()) >= 8 #Change to a period of time rather than count
+        self.searching = abs(self.scan_time - time.time()) <= 20
         
         v = 0 #Set initial velocity and angular
         a = 0
         
         v_speed = 0.3 #Set variaboles for v, a speeds
-        a_speed = 0.3
+        a_speed = 1
         d_min = 1 #Set a variable for min distance to get to objects
         
         cmd_vel = Twist()
